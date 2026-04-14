@@ -45,9 +45,22 @@ export default async function handler(req, res) {
   // Read raw body for signature verification
   const rawBody = getRawBody(req);
 
+  // Debug: log body type info
+  console.log('DEBUG body type:', typeof req.body, 'isBuffer:', Buffer.isBuffer(req.body), 'rawBody length:', rawBody.length, 'rawBody preview:', rawBody.substring(0, 80));
+
   const signature = req.headers['x-line-signature'];
   if (!signature || !verifySignature(rawBody, signature)) {
-    return res.status(403).json({ error: 'Invalid signature' });
+    // Return debug info to help diagnose
+    return res.status(403).json({
+      error: 'Invalid signature',
+      debug: {
+        bodyType: typeof req.body,
+        isBuffer: Buffer.isBuffer(req.body),
+        rawBodyLength: rawBody.length,
+        rawBodyPreview: rawBody.substring(0, 100),
+        hasSignature: !!signature,
+      }
+    });
   }
 
   const body = typeof req.body === 'object' ? req.body : JSON.parse(rawBody);
