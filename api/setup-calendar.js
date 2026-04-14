@@ -1,14 +1,12 @@
 // =====================================================================
 // Google Calendar OAuth Setup Helper
-// Visit /api/setup-calendar to get auth URL, then exchange code
 // =====================================================================
-import { getAuthUrl, exchangeCode } from '../lib/calendar.js';
+const { getAuthUrl, exchangeCode } = require('../lib/calendar.js');
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const { code } = req.query;
 
   if (code) {
-    // Step 2: Exchange code for tokens
     try {
       const tokens = await exchangeCode(code);
       return res.status(200).json({
@@ -22,7 +20,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Step 1: Show auth URL
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     return res.status(400).json({
       error: 'GOOGLE_CLIENT_ID と GOOGLE_CLIENT_SECRET が設定されていません。',
@@ -61,4 +58,4 @@ export default async function handler(req, res) {
 
   res.setHeader('Content-Type', 'text/html');
   return res.status(200).send(html);
-}
+};

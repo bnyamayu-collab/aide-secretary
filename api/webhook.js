@@ -1,11 +1,11 @@
 // =====================================================================
 // LINE Bot Webhook — Vercel Serverless Function
 // =====================================================================
-import crypto from 'crypto';
-import { reply, downloadContent, getProfile, confirmMessage, quickReply, flexCard } from '../lib/line.js';
-import { chat, describeImage, buildSystemPrompt } from '../lib/gemini.js';
-import * as store from '../lib/store.js';
-import { addEvent, getTodayEvents } from '../lib/calendar.js';
+const crypto = require('crypto');
+const { reply, downloadContent, getProfile: getLineProfile, confirmMessage, quickReply, flexCard } = require('../lib/line.js');
+const { chat, describeImage, buildSystemPrompt } = require('../lib/gemini.js');
+const store = require('../lib/store.js');
+const { addEvent, getTodayEvents } = require('../lib/calendar.js');
 
 // ---------- Signature verification ----------
 function verifySignature(body, signature) {
@@ -15,49 +15,49 @@ function verifySignature(body, signature) {
   return hash === signature;
 }
 
-// ---------- Helper: read raw body ----------
-function getRawBody(req) {
-  // When bodyParser is false, Vercel provides req.body as a Buffer
-  if (Buffer.isBuffer(req.body)) {
-    return req.body.toString('utf-8');
-  }
-  // If body is already a string
-  if (typeof req.body === 'string') {
-    return req.body;
-  }
-  // If body was parsed as object (bodyParser: false not applied due to ESM compilation),
-  // reconstruct JSON from the parsed object. LINE sends compact JSON so this matches.
-  if (typeof req.body === 'object' && req.body !== null) {
-    return JSON.stringify(req.body);
-  }
-  return '';
-}
-
 // ---------- Main handler ----------
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'Aide LINE Bot is running 🤖' });
+    return res.status(200).json({ status: 'Aide LINE Bot is running' });
   }
   if (req.method !== 'POST') {
     return res.status(405).end();
   }
 
-  // Read raw body for signature verification
-  const rawBody = getRawBody(req);
+  // With bodyParser: false (CJS config below), req.body is a Buffer
+  let rawBody;
+  if (Buffer.isBuffer(req.body)) {
+    rawBody = req.body.toString('utf-8');
+  } else if (typeof req.body === 'string') {
+    rawBody = req.body;
+  } else {
+    // Fallback: read from stream
+    rawBody = await new Promise((resolve, reject) => {
+      const chunks = [];
+      req.on('data', (chunk) => chunks.push(chunk));
+      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      req.on('error', reject);
+    });
+  }
 
   const signature = req.headers['x-line-signature'];
   if (!signature || !verifySignature(rawBody, signature)) {
     return res.status(403).json({ error: 'Invalid signature' });
   }
 
-  const body = typeof req.body === 'object' ? req.body : JSON.parse(rawBody);
+  const body = JSON.parse(rawBody);
   const events = body.events || [];
 
   // Process events in parallel
   await Promise.all(events.map(e => handleEvent(e)));
 
   return res.status(200).json({ ok: true });
-}
+};
+
+// Vercel config: disable body parsing (we need raw body for signature verification)
+module.exports.config = {
+  api: { bodyParser: false },
+};
 
 // ---------- Event router ----------
 async function handleEvent(event) {
@@ -67,7 +67,7 @@ async function handleEvent(event) {
   // Ensure user profile exists in Firestore
   const profile = await store.getProfile(userId);
   if (!profile.registered) {
-    const lineProfile = await getProfile(userId);
+    const lineProfile = await getLineProfile(userId);
     await store.updateProfile(userId, {
       registered: true,
       displayName: lineProfile?.displayName || '',
@@ -96,7 +96,7 @@ async function handleEvent(event) {
 
 // ---------- Follow (friend added) ----------
 async function handleFollow(event, userId) {
-  const lineProfile = await getProfile(userId);
+  const lineProfile = await getLineProfile(userId);
   const name = lineProfile?.displayName || '';
   await store.updateProfile(userId, { registered: true, displayName: name, location: '大分県津久見市', info: '' });
   await reply(event.replyToken, [
@@ -161,7 +161,7 @@ async function handleText(event, userId, text) {
     return await reply(event.replyToken, `✅ 居住地を「${location}」に設定しました！天気通知もこの地域に対応します🌤`);
   }
 
-  // Handle "save as memo" from quick reply buttons (image/audio/file results)
+  // Handle "save as memo" from quick reply buttons
   if (trimmed.startsWith('メモ保存画像:') || trimmed.startsWith('メモ保存音声:') || trimmed.startsWith('メモ保存ファイル:')) {
     const content = trimmed.replace(/^メモ保存(画像|音声|ファイル):\s*/, '');
     const source = trimmed.startsWith('メモ保存画像') ? 'image' : trimmed.startsWith('メモ保存音声') ? 'audio' : 'file';
@@ -170,7 +170,6 @@ async function handleText(event, userId, text) {
   }
   if (trimmed.startsWith('議事録保存:')) {
     const content = trimmed.replace(/^議事録保存:\s*/, '');
-    // Re-process as minutes format via Gemini
     const result = await chat(
       '以下のテキストを議事録形式（日時・参加者・議題・決定事項・TODO/担当・期限）で構造化してまとめ直して。',
       content, []
@@ -187,7 +186,6 @@ async function handleText(event, userId, text) {
       await store.addMemo(userId, { text: memoText, source: 'text' });
       return await reply(event.replyToken, `📝 メモしました！\n\n「${memoText}」\n\n「メモ一覧」で確認できます。`);
     }
-    // User said "メモして" without content — next image will be saved as memo
     await store.updateProfile(userId, { _pendingImageMemo: true });
     return await reply(event.replyToken, '📝 了解！次に送ってくれた画像やテキストをメモに保存しますね。');
   }
@@ -225,26 +223,21 @@ async function handleText(event, userId, text) {
     messages[0] += `\n\n✅ タスクを${result.tasks.length}件登録しました。「タスク一覧」で確認できます。`;
   }
 
-  await reply(event.replyToken, messages.slice(0, 5)); // LINE max 5 messages
+  await reply(event.replyToken, messages.slice(0, 5));
 }
 
 // ---------- Image message ----------
 async function handleImage(event, userId, messageId) {
-  // Store image data temporarily for context, but do NOT auto-save as memo
   const imageBase64 = await downloadContent(messageId);
-
-  // Check if there's a pending memo request (user said "メモして" etc. before sending image)
   const profile = await store.getProfile(userId);
   const pendingMemo = profile._pendingImageMemo;
 
   if (pendingMemo) {
-    // User explicitly asked to memo this image
     await store.updateProfile(userId, { _pendingImageMemo: false });
     const description = await describeImage(imageBase64);
     await store.addMemo(userId, { text: description, source: 'image', imageDescription: description });
     await reply(event.replyToken, `📸 画像の内容をメモしました！\n\n${description.slice(0, 400)}\n\n「メモ一覧」で確認できます。`);
   } else {
-    // Just analyze and respond, don't save
     const description = await describeImage(imageBase64);
     await reply(event.replyToken, quickReply(
       `📸 画像の内容:\n\n${description.slice(0, 500)}`,
@@ -269,7 +262,6 @@ async function handleAudio(event, userId, messageId) {
     ? result.text.slice(0, 1000) + '…'
     : result.text;
 
-  // Respond with transcription but do NOT auto-save as memo
   await reply(event.replyToken, quickReply(
     `🎙 文字起こし:\n\n${summary}`,
     [
@@ -292,7 +284,6 @@ async function handleFile(event, userId, msg) {
       [{ mime, data: fileBase64 }]
     );
 
-    // Respond with summary but do NOT auto-save as memo
     await reply(event.replyToken, quickReply(
       `📄 ${fileName} の内容:\n\n${result.text.slice(0, 1200)}`,
       [
@@ -391,8 +382,3 @@ async function showTodaySchedule(event, userId) {
 
   await reply(event.replyToken, `📅 今日の予定\n\n${list}`);
 }
-
-// Vercel config: disable body parsing (we need raw body for signature verification)
-export const config = {
-  api: { bodyParser: false },
-};
