@@ -17,21 +17,20 @@ function verifySignature(body, signature) {
 
 // ---------- Helper: read raw body ----------
 function getRawBody(req) {
-  return new Promise((resolve, reject) => {
-    // When bodyParser is disabled, req.body is a Buffer or undefined
-    if (Buffer.isBuffer(req.body)) {
-      resolve(req.body.toString('utf-8'));
-      return;
-    }
-    if (typeof req.body === 'string') {
-      resolve(req.body);
-      return;
-    }
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
+  // When bodyParser is false, Vercel provides req.body as a Buffer
+  if (Buffer.isBuffer(req.body)) {
+    return req.body.toString('utf-8');
+  }
+  // If body is already a string
+  if (typeof req.body === 'string') {
+    return req.body;
+  }
+  // If body was parsed as object (bodyParser: false not applied due to ESM compilation),
+  // reconstruct JSON from the parsed object. LINE sends compact JSON so this matches.
+  if (typeof req.body === 'object' && req.body !== null) {
+    return JSON.stringify(req.body);
+  }
+  return '';
 }
 
 // ---------- Main handler ----------
@@ -44,16 +43,14 @@ export default async function handler(req, res) {
   }
 
   // Read raw body for signature verification
-  const rawBody = await getRawBody(req);
-  console.log('Body type:', typeof req.body, 'Buffer?', Buffer.isBuffer(req.body), 'rawBody length:', rawBody.length);
+  const rawBody = getRawBody(req);
 
   const signature = req.headers['x-line-signature'];
   if (!signature || !verifySignature(rawBody, signature)) {
-    console.error('Invalid signature, sig:', signature ? 'present' : 'missing', 'rawBody:', rawBody.substring(0, 100));
     return res.status(403).json({ error: 'Invalid signature' });
   }
 
-  const body = JSON.parse(rawBody);
+  const body = typeof req.body === 'object' ? req.body : JSON.parse(rawBody);
   const events = body.events || [];
 
   // Process events in parallel
