@@ -15,6 +15,21 @@ function verifySignature(body, signature) {
   return hash === signature;
 }
 
+// ---------- Helper: read raw body ----------
+function getRawBody(req) {
+  return new Promise((resolve, reject) => {
+    if (req.body) {
+      // If body was already parsed by Vercel, stringify it back
+      resolve(typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+      return;
+    }
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
 // ---------- Main handler ----------
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -25,17 +40,15 @@ export default async function handler(req, res) {
   }
 
   // Read raw body for signature verification
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const rawBody = Buffer.concat(chunks).toString('utf-8');
+  const rawBody = await getRawBody(req);
 
   const signature = req.headers['x-line-signature'];
-  if (!verifySignature(rawBody, signature)) {
-    console.error('Invalid signature');
+  if (!signature || !verifySignature(rawBody, signature)) {
+    console.error('Invalid signature, sig:', signature ? 'present' : 'missing');
     return res.status(403).json({ error: 'Invalid signature' });
   }
 
-  const body = JSON.parse(rawBody);
+  const body = typeof req.body === 'object' && req.body ? req.body : JSON.parse(rawBody);
   const events = body.events || [];
 
   // Process events in parallel
